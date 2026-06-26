@@ -1,0 +1,10 @@
+*.pth
+*.pt
+__pycache__/
+*.py[cod]
+.pytest_cache/
+predictions*.csv
+/data/
+*.avi
+*.mp4
+mtc-aic4-phase2-main.zip
