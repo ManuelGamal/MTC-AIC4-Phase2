@@ -46,7 +46,7 @@ class RuntimeConfig:
     uetrack_variant: str = "uetrack_base"
     template_size: int = 112
     search_size: int = 224
-    template_factor: float = 4.0
+    template_factor: float = 2.0
     search_factor: float = 4.5
     update_interval: int = 25
     num_templates: int = 2
@@ -360,36 +360,37 @@ class UETrackOnline:
             self.recover_streak = 0
 
     def _update_templates(self, image: np.ndarray, conf: float) -> None:
-        if self.num_template <= 1 or conf <= self.update_threshold:
+        if self.num_template <= 1:
             return
 
-        z_patch_arr, resize_factor = sample_target(
-            image,
-            self.state,
-            self.template_factor,
-            output_sz=self.template_size,
-        )
-        dyn_template = preprocess_image(z_patch_arr).unsqueeze(0)
-        if self.device.type == "cuda" and USE_CHANNELS_LAST:
-            dyn_template = dyn_template.contiguous(memory_format=torch.channels_last)
-        prev_box_crop = transform_image_to_crop(
-            torch.tensor(self.state),
-            torch.tensor(self.state),
-            resize_factor,
-            torch.tensor([self.template_size, self.template_size]),
-            normalize=True,
-        )
-        dyn_anno = prev_box_crop.to(self.device).unsqueeze(0)
+        if conf > self.update_threshold:
+            z_patch_arr, resize_factor = sample_target(
+                image,
+                self.state,
+                self.template_factor,
+                output_sz=self.template_size,
+            )
+            dyn_template = preprocess_image(z_patch_arr).unsqueeze(0)
+            if self.device.type == "cuda" and USE_CHANNELS_LAST:
+                dyn_template = dyn_template.contiguous(memory_format=torch.channels_last)
+            prev_box_crop = transform_image_to_crop(
+                torch.tensor(self.state),
+                torch.tensor(self.state),
+                resize_factor,
+                torch.tensor([self.template_size, self.template_size]),
+                normalize=True,
+            )
+            dyn_anno = prev_box_crop.to(self.device).unsqueeze(0)
 
-        self.memory_template_list.append(dyn_template)
-        self.memory_template_anno_list.append(dyn_anno)
-        if len(self.memory_template_list) > self.memory_bank:
-            self.memory_template_list.pop(0)
-            self.memory_template_anno_list.pop(0)
+            self.memory_template_list.append(dyn_template)
+            self.memory_template_anno_list.append(dyn_anno)
+            if len(self.memory_template_list) > self.memory_bank:
+                self.memory_template_list.pop(0)
+                self.memory_template_anno_list.pop(0)
 
-        if self.frame_id % self.update_intervals == 0:
+        if self.frame_id % self.update_intervals == 0 and not self.absent:
             len_list = len(self.memory_template_anno_list)
-            interval = max(1, len_list // self.num_template)
+            interval = len_list // self.num_template
             for i in range(1, self.num_template):
                 idx = min(interval * i, len_list - 1)
                 self.template_list[i] = self.memory_template_list[idx].to(self.device)
@@ -587,48 +588,30 @@ def read_init_box(path: str | Path) -> List[float]:
 
 
 def sample_target(image: np.ndarray, bbox: Sequence[float], factor: float, output_sz: int):
-    x, y, w, h = [float(value) for value in bbox[:4]]
-    height, width = image.shape[:2]
-    w = max(1.0, min(w, float(width)))
-    h = max(1.0, min(h, float(height)))
-    cx = x + 0.5 * w
-    cy = y + 0.5 * h
-    side = max(max(w, h) * float(factor), 1.0)
-    side = min(side, 2.0 * float(max(height, width)))
-
-    x1 = int(round(cx - 0.5 * side))
-    y1 = int(round(cy - 0.5 * side))
-    x2 = int(round(cx + 0.5 * side))
-    y2 = int(round(cy + 0.5 * side))
-
-    pad_left = max(0, -x1)
-    pad_top = max(0, -y1)
-    pad_right = max(0, x2 - width)
-    pad_bottom = max(0, y2 - height)
-
-    x1 = max(0, x1)
-    y1 = max(0, y1)
-    x2 = min(width, x2)
-    y2 = min(height, y2)
-
-    if x2 > x1 and y2 > y1:
-        crop = image[y1:y2, x1:x2]
+    if hasattr(bbox, "tolist"):
+        x, y, w, h = bbox.tolist()
     else:
-        crop = np.zeros((2, 2, 3), dtype=np.uint8)
+        x, y, w, h = bbox
 
-    if pad_left or pad_top or pad_right or pad_bottom:
-        crop = cv2.copyMakeBorder(
-            crop,
-            pad_top,
-            pad_bottom,
-            pad_left,
-            pad_right,
-            cv2.BORDER_REPLICATE,
-        )
+    crop_size = math.ceil(math.sqrt(w * h) * factor)
+    if crop_size < 1:
+        raise ValueError("Too small bounding box.")
 
-    crop_side = max(1, crop.shape[0], crop.shape[1])
+    x1 = round(x + 0.5 * w - crop_size * 0.5)
+    x2 = x1 + crop_size
+    y1 = round(y + 0.5 * h - crop_size * 0.5)
+    y2 = y1 + crop_size
+
+    x1_pad = max(0, -x1)
+    x2_pad = max(x2 - image.shape[1] + 1, 0)
+    y1_pad = max(0, -y1)
+    y2_pad = max(y2 - image.shape[0] + 1, 0)
+
+    crop = image[y1 + y1_pad:y2 - y2_pad, x1 + x1_pad:x2 - x2_pad, :]
+    crop = cv2.copyMakeBorder(crop, y1_pad, y2_pad, x1_pad, x2_pad, cv2.BORDER_CONSTANT)
+
+    resize_factor = output_sz / crop_size
     crop = cv2.resize(crop, (output_sz, output_sz))
-    resize_factor = float(output_sz) / float(crop_side)
     return crop, resize_factor
 
 
