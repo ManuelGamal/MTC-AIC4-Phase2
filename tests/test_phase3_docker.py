@@ -55,7 +55,7 @@ class TestPhase3DockerContract(unittest.TestCase):
         text = PHASE3_DOC.read_text(encoding="utf-8")
         self.assertIn("Dockerfile", text)
         self.assertIn("linux/amd64", text)
-        self.assertIn("Do not submit `Dockerfile.jetson`", text)
+        self.assertIn("not the Phase 3 submission Dockerfile", text)
 
 
 if __name__ == "__main__":

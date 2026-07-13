@@ -48,7 +48,7 @@ class TestSubmissionConstraints(unittest.TestCase):
             r"C:\\",
             r"pip\s+install",
             r"git\s+clone",
-            r"input\(",
+            r"\binput\s*\(",
         ]
         for path in SUBMISSION_FILES:
             source = path.read_text(encoding="utf-8")
@@ -76,6 +76,7 @@ class TestSubmissionConstraints(unittest.TestCase):
             "types",
             "typing",
             "predictor",
+            "tensorrt",
             "torch",
         }
         package_to_imports = {

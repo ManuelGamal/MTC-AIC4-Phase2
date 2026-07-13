@@ -5,7 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRT_SCRIPT = REPO_ROOT / "tools" / "export_to_tensorrt.py"
-RUNBOOK = REPO_ROOT / "ORIN_NANO_100_PERCENT_RUNBOOK.md"
+PHASE3_DOC = REPO_ROOT / "PHASE3_DOCKER_SUBMISSION.md"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
 
 
@@ -55,14 +55,13 @@ class TestTensorRTExportScript(unittest.TestCase):
 
 
 class TestTensorRTDocs(unittest.TestCase):
-    def test_runbook_contains_tensorrt_commands(self):
-        text = RUNBOOK.read_text(encoding="utf-8")
+    def test_phase3_doc_contains_tensorrt_runtime_contract(self):
+        text = PHASE3_DOC.read_text(encoding="utf-8")
         self.assertIn("TensorRT", text)
-        self.assertIn("python tools/export_to_tensorrt.py", text)
+        self.assertIn("tools/export_to_tensorrt.py --mode fp16", text)
         self.assertIn("--mode fp16", text)
-        self.assertIn("--mode int8", text)
         self.assertIn("checkpoints/uetrack_fp16.engine", text)
-        self.assertIn("checkpoints/uetrack_int8.engine", text)
+        self.assertIn("PyTorch fallback", text)
 
     def test_requirements_include_onnx_for_export(self):
         requirements = REQUIREMENTS.read_text(encoding="utf-8")
