@@ -22,8 +22,8 @@ TensorRT ARG: TRT_VER=10.16.1.11-1+cuda13.2
 ONNX: 1.19.1
 ```
 
-`Dockerfile.jetson` is retained only as an ARM64 Jetson fallback artifact and is
-not the Phase 3 submission Dockerfile.
+No ARM64/Jetson Dockerfile is included in the Phase 3 submission context. The
+root `Dockerfile` is the only submission Dockerfile.
 
 ## Build Command
 

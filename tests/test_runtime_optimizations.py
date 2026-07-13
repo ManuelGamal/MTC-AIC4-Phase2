@@ -15,7 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 HAS_TORCH = importlib.util.find_spec("torch") is not None
 
 
-class TestJetsonOptimizationSource(unittest.TestCase):
+class TestRuntimeOptimizationSource(unittest.TestCase):
     def test_compile_is_opt_in(self):
         source = PREDICTOR_PATH.read_text(encoding="utf-8")
         self.assertIn('USE_COMPILE = os.getenv("ORIN_COMPILE", "0") == "1"', source)
@@ -39,7 +39,7 @@ class TestJetsonOptimizationSource(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_TORCH, "torch is required for runtime optimization tests")
-class TestJetsonOptimizationRuntime(unittest.TestCase):
+class TestRuntimeOptimizationRuntime(unittest.TestCase):
     def setUp(self):
         self.original_environ = os.environ.copy()
 

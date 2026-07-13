@@ -67,26 +67,6 @@ class TestTensorRTDocs(unittest.TestCase):
         requirements = REQUIREMENTS.read_text(encoding="utf-8")
         self.assertIn("onnx==", requirements)
 
-    def test_offline_bundle_scripts_are_reproducible(self):
-        run_offline = REPO_ROOT / "run_offline.sh"
-        windows_bundle = REPO_ROOT / "tools" / "create_windows_offline_bundle.ps1"
-        self.assertTrue(run_offline.exists())
-        self.assertTrue(windows_bundle.exists())
-
-        runner_text = run_offline.read_text(encoding="utf-8")
-        windows_text = windows_bundle.read_text(encoding="utf-8")
-        self.assertIn("newbiesquad_orin:jp72", runner_text)
-        self.assertIn("--platform linux/arm64", windows_text)
-        self.assertIn("nvcr.io/nvidia/pytorch:25.06-py3-igpu", windows_text)
-
-    def test_jetson_runners_pass_tensorrt_env_flags(self):
-        for script_name in ["run_jetson.sh", "run_direct_jetson.sh", "run_jetson_containers.sh"]:
-            text = (REPO_ROOT / script_name).read_text(encoding="utf-8")
-            self.assertIn("ORIN_TENSORRT", text)
-            self.assertIn("ORIN_TENSORRT_AUTOBUILD", text)
-            self.assertIn("ORIN_TENSORRT_ENGINE", text)
-            self.assertIn("ORIN_TENSORRT_REQUIRED", text)
-
 
 if __name__ == "__main__":
     unittest.main()

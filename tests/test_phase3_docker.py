@@ -4,13 +4,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SUBMISSION_DOCKERFILE = REPO_ROOT / "Dockerfile"
-JETSON_DOCKERFILE = REPO_ROOT / "Dockerfile.jetson"
 PHASE3_REQUIREMENTS = REPO_ROOT / "requirements.phase3.txt"
 PHASE3_DOC = REPO_ROOT / "PHASE3_DOCKER_SUBMISSION.md"
 RUN_INFERENCE = REPO_ROOT / "run_inference.sh"
-WINDOWS_BUNDLE = REPO_ROOT / "tools" / "create_windows_offline_bundle.ps1"
-JETSON_BUNDLE = REPO_ROOT / "tools" / "make_jetson_offline_bundle.sh"
-RUN_JETSON = REPO_ROOT / "run_jetson.sh"
 
 
 class TestPhase3DockerContract(unittest.TestCase):
@@ -41,21 +37,11 @@ class TestPhase3DockerContract(unittest.TestCase):
         self.assertIn("onnx==1.19.1", text)
         self.assertNotIn("torch==", text)
 
-    def test_jetson_dockerfile_is_separate_and_preserved(self):
-        text = JETSON_DOCKERFILE.read_text(encoding="utf-8")
-        self.assertIn("nvcr.io/nvidia/pytorch:25.06-py3-igpu", text)
-        self.assertIn("tools/verify_jetson_requirements.py", text)
-
-    def test_jetson_helpers_build_dockerfile_jetson(self):
-        for path in (WINDOWS_BUNDLE, JETSON_BUNDLE, RUN_JETSON):
-            text = path.read_text(encoding="utf-8")
-            self.assertIn("Dockerfile.jetson", text)
-
     def test_phase3_doc_points_to_submission_dockerfile(self):
         text = PHASE3_DOC.read_text(encoding="utf-8")
         self.assertIn("Dockerfile", text)
         self.assertIn("linux/amd64", text)
-        self.assertIn("not the Phase 3 submission Dockerfile", text)
+        self.assertIn("ARM64/Jetson", text)
 
 
 if __name__ == "__main__":

@@ -11,3 +11,20 @@ predictions_cows*.csv
 *.avi
 *.mp4
 mtc-aic4-phase2-main.zip
+
+# Local-only ARM64/Jetson backup artifacts, not part of Phase 3 submission.
+Dockerfile.jetson
+run_deployment_matrix.sh
+run_direct_jetson.sh
+run_jetson.sh
+run_jetson_containers.sh
+run_offline.sh
+tests/test_orin_live_simulator.py
+tools/cows_single_sequence_jetson.json
+tools/create_windows_offline_bundle.ps1
+tools/jetson_preflight.sh
+tools/make_jetson_offline_bundle.sh
+tools/orin_live_simulator.py
+tools/run_orin_simulator.ps1
+tools/setup_direct_jetson.sh
+tools/verify_jetson_requirements.py
