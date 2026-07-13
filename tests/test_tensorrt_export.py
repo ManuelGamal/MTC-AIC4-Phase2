@@ -84,6 +84,7 @@ class TestTensorRTDocs(unittest.TestCase):
         for script_name in ["run_jetson.sh", "run_direct_jetson.sh", "run_jetson_containers.sh"]:
             text = (REPO_ROOT / script_name).read_text(encoding="utf-8")
             self.assertIn("ORIN_TENSORRT", text)
+            self.assertIn("ORIN_TENSORRT_AUTOBUILD", text)
             self.assertIn("ORIN_TENSORRT_ENGINE", text)
             self.assertIn("ORIN_TENSORRT_REQUIRED", text)
 

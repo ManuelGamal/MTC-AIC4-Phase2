@@ -36,6 +36,7 @@ jetson-containers run "${IMAGE_TAG}" \
     --env ORIN_CUDA_WARMUP="${ORIN_CUDA_WARMUP:-1}" \
     --env ORIN_COMPILE="${ORIN_COMPILE:-0}" \
     --env ORIN_TENSORRT="${ORIN_TENSORRT:-0}" \
+    --env ORIN_TENSORRT_AUTOBUILD="${ORIN_TENSORRT_AUTOBUILD:-0}" \
     --env ORIN_TENSORRT_ENGINE="${ORIN_TENSORRT_ENGINE:-/opt/newbiesquad/checkpoints/uetrack_fp16.engine}" \
     --env ORIN_TENSORRT_REQUIRED="${ORIN_TENSORRT_REQUIRED:-0}" \
     bash -lc "python -m pip install --only-binary=:all: -r requirements.txt && python tools/verify_jetson_requirements.py && python inference.py '${INPUT_JSON}' '${SPLIT}' '${OUTPUT_CSV}' && python tools/validate_predictions_against_input.py '${INPUT_JSON}' '${SPLIT}' '${OUTPUT_CSV}' --allow-zero-boxes"

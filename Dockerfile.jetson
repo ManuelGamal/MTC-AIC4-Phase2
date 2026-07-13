@@ -13,7 +13,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     ORIN_CHANNELS_LAST=1 \
     ORIN_CUDA_WARMUP=1 \
     ORIN_COMPILE=0 \
-    ORIN_TENSORRT=0 \
+    ORIN_TENSORRT=1 \
+    ORIN_TENSORRT_AUTOBUILD=0 \
+    ORIN_TENSORRT_REQUIRED=0 \
     ORIN_TENSORRT_ENGINE=/opt/newbiesquad/checkpoints/uetrack_fp16.engine
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

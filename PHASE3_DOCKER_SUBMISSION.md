@@ -149,15 +149,25 @@ Expected full `public_lb` size:
 74293 prediction rows
 ```
 
-## Optional TensorRT FP16 Fast Path
+## Default TensorRT FP16 Fast Path
 
-The normal path is PyTorch CUDA FP16. TensorRT is now wired as an optional fast
-path:
+The default container command now tries TensorRT first. If CUDA, ONNX export,
+or engine build/load fails, it falls back to PyTorch FP16 unless strict mode is
+enabled:
 
 ```text
 ORIN_TENSORRT=1
+ORIN_TENSORRT_AUTOBUILD=1
 ORIN_TENSORRT_ENGINE=/workspace/checkpoints/uetrack_fp16.engine
 ORIN_TENSORRT_REQUIRED=0
+```
+
+Default `docker run newbiesquad_phase3:latest` behavior:
+
+```text
+1. If /workspace/checkpoints/uetrack_fp16.engine exists, load it.
+2. If it is missing and CUDA is available, try to build it with tools/export_to_tensorrt.py --mode fp16.
+3. If TensorRT cannot be used, continue with the PyTorch FP16 tracker.
 ```
 
 Build the FP16 TensorRT engine on the same GPU class that will run inference:

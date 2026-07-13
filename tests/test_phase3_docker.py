@@ -7,6 +7,7 @@ SUBMISSION_DOCKERFILE = REPO_ROOT / "Dockerfile"
 JETSON_DOCKERFILE = REPO_ROOT / "Dockerfile.jetson"
 PHASE3_REQUIREMENTS = REPO_ROOT / "requirements.phase3.txt"
 PHASE3_DOC = REPO_ROOT / "PHASE3_DOCKER_SUBMISSION.md"
+RUN_INFERENCE = REPO_ROOT / "run_inference.sh"
 WINDOWS_BUNDLE = REPO_ROOT / "tools" / "create_windows_offline_bundle.ps1"
 JETSON_BUNDLE = REPO_ROOT / "tools" / "make_jetson_offline_bundle.sh"
 RUN_JETSON = REPO_ROOT / "run_jetson.sh"
@@ -23,6 +24,17 @@ class TestPhase3DockerContract(unittest.TestCase):
         self.assertIn("torchaudio==2.9.1", text)
         self.assertIn("COPY . .", text)
         self.assertIn("tools/verify_phase3_requirements.py", text)
+        self.assertIn("ORIN_TENSORRT=1", text)
+        self.assertIn("ORIN_TENSORRT_AUTOBUILD=1", text)
+        self.assertIn('CMD ["bash", "run_inference.sh"', text)
+
+    def test_phase3_entrypoint_autobuilds_tensorrt_with_fallback(self):
+        text = RUN_INFERENCE.read_text(encoding="utf-8")
+        self.assertIn("ORIN_TENSORRT_AUTOBUILD", text)
+        self.assertIn("tools/export_to_tensorrt.py", text)
+        self.assertIn("--mode fp16", text)
+        self.assertIn("Falling back to PyTorch", text)
+        self.assertIn("ORIN_TENSORRT=0 ORIN_COMPILE=0", text)
 
     def test_phase3_requirements_use_compatible_onnx(self):
         text = PHASE3_REQUIREMENTS.read_text(encoding="utf-8")

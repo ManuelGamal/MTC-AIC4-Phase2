@@ -41,7 +41,7 @@ USE_TF32 = os.getenv("ORIN_TF32", "1") == "1"
 USE_CUDA_WARMUP = os.getenv("ORIN_CUDA_WARMUP", "1") == "1"
 USE_FP16 = os.getenv("ORIN_FP16", "1") == "1"
 USE_COMPILE = os.getenv("ORIN_COMPILE", "0") == "1"
-USE_TENSORRT = os.getenv("ORIN_TENSORRT", "0") == "1"
+USE_TENSORRT = os.getenv("ORIN_TENSORRT", "1") == "1"
 TENSORRT_REQUIRED = os.getenv("ORIN_TENSORRT_REQUIRED", "0") == "1"
 TENSORRT_ENGINE_PATH = Path(os.getenv("ORIN_TENSORRT_ENGINE", REPO_ROOT / "checkpoints" / "uetrack_fp16.engine"))
 

@@ -15,8 +15,12 @@ ENV PYTHONUNBUFFERED=1 \
     ORIN_CHANNELS_LAST=1 \
     ORIN_CUDA_WARMUP=1 \
     ORIN_COMPILE=0 \
-    ORIN_TENSORRT=0 \
-    ORIN_TENSORRT_ENGINE=/workspace/checkpoints/uetrack_fp16.engine
+    ORIN_TENSORRT=1 \
+    ORIN_TENSORRT_AUTOBUILD=1 \
+    ORIN_TENSORRT_REQUIRED=0 \
+    ORIN_TENSORRT_ENGINE=/workspace/checkpoints/uetrack_fp16.engine \
+    ORIN_TENSORRT_ONNX=/workspace/checkpoints/uetrack_trt.onnx \
+    ORIN_TENSORRT_WORKSPACE_MB=2048
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
@@ -49,4 +53,4 @@ COPY . .
 RUN python3 download.py
 RUN python3 tools/verify_phase3_requirements.py
 
-CMD ["python3", "inference.py", "test.json", "public_lb", "predictions.csv"]
+CMD ["bash", "run_inference.sh", "test.json", "public_lb", "predictions.csv"]

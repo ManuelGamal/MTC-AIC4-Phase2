@@ -31,7 +31,7 @@ class TestJetsonOptimizationSource(unittest.TestCase):
 
     def test_tensorrt_runtime_is_optional_and_guarded(self):
         source = PREDICTOR_PATH.read_text(encoding="utf-8")
-        self.assertIn('USE_TENSORRT = os.getenv("ORIN_TENSORRT", "0") == "1"', source)
+        self.assertIn('USE_TENSORRT = os.getenv("ORIN_TENSORRT", "1") == "1"', source)
         self.assertIn('TENSORRT_REQUIRED = os.getenv("ORIN_TENSORRT_REQUIRED", "0") == "1"', source)
         self.assertIn("class TensorRTRunner", source)
         self.assertIn("execute_async_v3", source)

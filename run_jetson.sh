@@ -30,6 +30,7 @@ docker run --rm --runtime nvidia --network none \
     -e ORIN_CUDA_WARMUP="${ORIN_CUDA_WARMUP:-1}" \
     -e ORIN_COMPILE="${ORIN_COMPILE:-0}" \
     -e ORIN_TENSORRT="${ORIN_TENSORRT:-0}" \
+    -e ORIN_TENSORRT_AUTOBUILD="${ORIN_TENSORRT_AUTOBUILD:-0}" \
     -e ORIN_TENSORRT_ENGINE="${ORIN_TENSORRT_ENGINE:-/opt/newbiesquad/checkpoints/uetrack_fp16.engine}" \
     -e ORIN_TENSORRT_REQUIRED="${ORIN_TENSORRT_REQUIRED:-0}" \
     -v "$(pwd):/opt/newbiesquad" \
