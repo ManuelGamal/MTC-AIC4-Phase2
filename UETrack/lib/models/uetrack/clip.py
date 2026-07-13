@@ -1,11 +1,12 @@
 import torch
-import clip
 import torch.nn as nn
 from timm.models.layers import trunc_normal_
 
 class TextEncoder(nn.Module):
     def __init__(self, type, out_channel):
         super().__init__()
+        import clip
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
         # device = "cpu"
         self.clip, self.preprocess = clip.load(type, device=device)

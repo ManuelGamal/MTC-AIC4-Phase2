@@ -1,0 +1,12 @@
+{
+  "public_lb": {
+    "dataset1/Car_video": {
+      "dataset": "dataset1",
+      "seq_name": "Car_video",
+      "n_frames": 585,
+      "native_fps": 60,
+      "video_path": "dataset1/Car_video/Car_video.mp4",
+      "annotation_path": "dataset1/Car_video/annotation.txt"
+    }
+  }
+}

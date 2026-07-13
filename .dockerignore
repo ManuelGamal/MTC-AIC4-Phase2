@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+.pytest_cache
+.venv
+.vscode
+__pycache__
+*.pyc
+*.pyo
+*.avi
+*.mp4
+predictions*.csv
+data/
+mtc-aic4-phase2-main.zip
+jetson_offline_bundle/

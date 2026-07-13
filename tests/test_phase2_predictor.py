@@ -64,6 +64,7 @@ class TestSubmissionConstraints(unittest.TestCase):
             "csv",
             "contextlib",
             "dataclasses",
+            "importlib",
             "json",
             "lib",
             "math",
@@ -75,6 +76,7 @@ class TestSubmissionConstraints(unittest.TestCase):
             "types",
             "typing",
             "predictor",
+            "torch",
         }
         package_to_imports = {
             "opencv-python-headless": {"cv2"},

@@ -1,175 +1,178 @@
-# Orin Nano 8 GB Deployment Guide
+# Jetson Orin Nano 8 GB Deployment Guide
 
-This guide walks through optimizing the UETrack model for <30 ms latency on Jetson Orin Nano 8 GB.
+Target board: Jetson Orin Nano 8 GB running JetPack 7.2 / L4T 39.2.
 
-## Overview
+This guide has two supported paths:
 
-The model is trained on specific crop sizes (112×112 templates, 224×224 search) and must stay on that distribution. Optimization paths:
+1. Build this repository's `Dockerfile.jetson` on the Jetson.
+2. Run from a `jetson-containers` PyTorch image without building a custom image.
 
-1. **GPU FP16 (recommended first step)** – Fast, good accuracy
-2. **TensorRT FP16** – Engine-level optimization
-3. **TensorRT INT8** – Maximum compression, requires calibration
-4. **Dynamic quantization** – CPU fallback (opt-in via code)
+The Docker path is the reproducible submission path. The `jetson-containers` path is a fast bring-up/debug path.
 
-## Quick Start on Orin Nano
+## Important Corrections to the Original Plan
 
-### Prerequisites
+- Do not depend on `dustynv/pytorch:2.4-r39.2.0` unless you have verified that exact tag exists on the target board. `Dockerfile.jetson` uses NVIDIA NGC `nvcr.io/nvidia/pytorch:25.06-py3-igpu` and lets you override it with `BASE_IMAGE=...`.
+- Do not install PyTorch from `requirements.txt`. PyTorch, CUDA, cuDNN, and TensorRT must come from the Jetson-compatible base image.
+- `ORIN_COMPILE=1` is experimental. `torch.compile(mode="max-autotune")` can consume too much memory and time on an 8 GB Jetson, and this tracker calls `forward_encoder` / `forward_decoder` directly, so compiling the module wrapper is not a guaranteed speedup.
+- `ORIN_FP16=1` is the default acceleration path. `ORIN_FP16=0` now disables autocast so TF32/FP32 tests are real.
+- TensorRT export is a second-stage optimization. It must be validated against accuracy and ONNX export support before it is treated as the production path.
+
+## One-Command Docker Deployment
+
+Run on the Jetson from the repository root:
 
 ```bash
-# Install required packages
-pip install tensorrt onnx onnx-graphsurgeon
+python download.py
+bash run_jetson.sh
 ```
 
-### Step 1: Run with GPU FP16 (Default)
+This builds `newbiesquad_orin:jp72`, runs inference with GPU access, writes `predictions.csv`, then validates it with `check_submission.py`.
 
-The model runs on GPU by default. On Orin Nano with FP16:
+Override inputs when needed:
 
 ```bash
-python inference.py data/test.json hidden predictions.csv
+INPUT_JSON=data/test.json SPLIT=hidden OUTPUT_CSV=predictions.csv bash run_jetson.sh
 ```
 
-Expected per-frame latency: 15–25 ms (batch size 1, two templates).
-
-### Step 2: Benchmark Current Performance
-
-Use the benchmark script to measure actual latency on your target device:
+Override the base image only if NVIDIA publishes a newer JetPack 7.2-compatible PyTorch iGPU tag:
 
 ```bash
-python tools/benchmark_inference.py \
-    /path/to/video.mp4 \
-    /path/to/annotation.txt \
-    --device cuda \
-    --fp16
+BASE_IMAGE=nvcr.io/nvidia/pytorch:25.06-py3-igpu bash run_jetson.sh
 ```
 
-This prints median, mean, p90, p99 latencies in milliseconds.
+## Alternative: jetson-containers
 
-### Step 3: If Still Above 30 ms, Try TensorRT FP16
-
-On Orin Nano, export the model and build a TensorRT engine:
+Install once:
 
 ```bash
-# Step 3a: Export to ONNX (run once on Orin)
-cd /path/to/NewbieSquad-MTC-AIC4-main
+git clone https://github.com/dusty-nv/jetson-containers
+bash jetson-containers/install.sh
+```
+
+Then run:
+
+```bash
+python download.py
+bash run_jetson_containers.sh
+```
+
+The script tries `autotag pytorch`, then `autotag l4t-pytorch`, then falls back to the same NGC PyTorch iGPU image used by the Dockerfile.
+
+## Full Fallback Matrix
+
+Use this when you want the repo to try every supported execution path:
+
+```bash
+python download.py
+bash run_deployment_matrix.sh
+```
+
+It runs:
+
+1. `tools/jetson_preflight.sh`
+2. Docker image build/run
+3. `jetson-containers`
+4. Direct Jetson Python
+
+For the direct Python fallback, prepare the host environment with:
+
+```bash
+bash tools/setup_direct_jetson.sh
+bash run_direct_jetson.sh
+```
+
+This path requires JetPack-compatible PyTorch to already be installed. It intentionally does not install generic PyPI `torch`.
+
+## Flash Drive / Offline Bundle
+
+Use this when the target Jetson has no internet. Build the bundle on an internet-connected Jetson Orin Nano with the same JetPack/L4T:
+
+```bash
+python download.py
+bash tools/make_jetson_offline_bundle.sh
+```
+
+The generated folder is the transfer artifact:
+
+```text
+jetson_offline_bundle/
+  newbiesquad_orin_jp72.tar
+  run_offline.sh
+  test.json
+  sample_submission.csv
+  README_OFFLINE.txt
+```
+
+Copy that folder to the flash drive. On the target Jetson:
+
+```bash
+cd /path/to/jetson_offline_bundle
+bash run_offline.sh
+```
+
+For competition input, put the provided JSON and video folders beside `run_offline.sh`, then run:
+
+```bash
+INPUT_JSON=data/test.json SPLIT=hidden OUTPUT_CSV=predictions.csv bash run_offline.sh
+```
+
+## Board Setup Checklist
+
+Before benchmarking:
+
+```bash
+sudo nvpmodel -m 0
+sudo jetson_clocks
+docker info | grep -i runtime
+python - <<'PY'
+import platform
+print(platform.machine())
+PY
+```
+
+Expected architecture is `aarch64`. If Docker cannot see the NVIDIA runtime, reinstall or repair NVIDIA Container Toolkit before debugging the model.
+
+## Runtime Flags
+
+Default production flags:
+
+```bash
+ORIN_FP16=1
+ORIN_TF32=1
+ORIN_CUDA_AUTOTUNE=1
+ORIN_CHANNELS_LAST=1
+ORIN_CUDA_WARMUP=1
+ORIN_COMPILE=0
+```
+
+Debug flags:
+
+```bash
+ORIN_FP16=0 ORIN_TF32=1 bash run_jetson.sh
+ORIN_COMPILE=1 bash run_jetson.sh
+```
+
+Only keep `ORIN_COMPILE=1` if it improves measured median latency and does not cause out-of-memory failures.
+
+## Verification Gates
+
+Run these on the Jetson/container:
+
+```bash
+python -m unittest tests.test_jetson_optimizations tests.test_env_simulator tests.test_phase2_predictor
+python inference.py test.json public_lb predictions.csv
+python tools/validate_predictions_against_input.py test.json public_lb predictions.csv --allow-zero-boxes
+python tools/latency_benchmark.py test.json public_lb --require-gpu
+```
+
+Passing unit tests on a desktop is useful, but it does not prove CUDA, FP16, video decoding, or memory behavior on Orin. The final gate is the board-side latency benchmark plus a valid submission CSV.
+
+## TensorRT Follow-Up
+
+Try TensorRT only after the PyTorch FP16 Docker path works. Start with the export-readiness probe:
+
+```bash
 python tools/export_to_tensorrt.py --output /tmp/uetrack.onnx --device cuda
-
-# Step 3b: Build FP16 engine
-/usr/src/tensorrt/bin/trtexec \
-    --onnx=/tmp/uetrack.onnx \
-    --saveEngine=/tmp/uetrack_fp16.engine \
-    --fp16 \
-    --workspace=2048
-
-# Step 3c: Benchmark the engine
-/usr/src/tensorrt/bin/trtexec \
-    --loadEngine=/tmp/uetrack_fp16.engine \
-    --iterations=1000 \
-    --avgRuns=100
 ```
 
-TensorRT engines typically achieve 1.5–3x speedup over PyTorch on Orin.
-
-### Step 4: If Still Above 30 ms, Try TensorRT INT8
-
-INT8 provides aggressive quantization but requires a small calibration dataset. 
-
-**Create a calibration dataset:**
-
-```bash
-# Generate 200 representative frames from your contest videos
-python tools/generate_calibration_data.py \
-    --input-dir /path/to/contest_release \
-    --output-dir /tmp/calib_data \
-    --num-frames 200
-```
-
-**Build INT8 engine with calibration:**
-
-```bash
-# Manual calibration (uses entropy calibration)
-/usr/src/tensorrt/bin/trtexec \
-    --onnx=/tmp/uetrack.onnx \
-    --int8 \
-    --saveEngine=/tmp/uetrack_int8.engine \
-    --workspace=2048 \
-    --calib=/tmp/calib_data
-```
-
-INT8 engines are typically 3–5x smaller than FP32 with ~1–5% accuracy loss.
-
-## Environment Variables
-
-### ORIN_QUANTIZE_DYNAMIC
-
-Enable CPU-side dynamic quantization of Linear layers (PyTorch only, no TensorRT):
-
-```bash
-export ORIN_QUANTIZE_DYNAMIC=1
-python inference.py data/test.json hidden predictions.csv
-```
-
-This is a fallback; TensorRT FP16 is preferred.
-
-## Benchmarking Best Practices
-
-1. **Warm-up first:** Run 20 iterations before measuring to avoid JIT/cuDNN setup overhead.
-2. **Use avgRuns and iterations:** `trtexec --iterations=1000 --avgRuns=100` gives stable numbers.
-3. **Disable frequency scaling:** 
-   ```bash
-   sudo jetson_clocks
-   ```
-4. **Monitor memory:** 
-   ```bash
-   tegrastats
-   ```
-
-## If Latency is Still Too High
-
-1. **Check batch size:** Ensure batch size is 1.
-2. **Profile the hot path:** Use `nsys` to find bottlenecks.
-3. **Consider reducing precision further:**
-   - TensorRT INT8 with larger workspace
-   - Quantize-aware training (out of scope here)
-4. **Check GPU clock:** Orin Nano runs at 1020 MHz; the RTX 4060 is 10–40x faster.
-
-## Expected Performance on Orin Nano 8 GB
-
-| Configuration | Latency (ms) | Notes |
-|---|---|---|
-| PyTorch FP32 | 80–150 | CPU fallback, very slow |
-| PyTorch FP16 | 15–30 | GPU FP16, typical winner |
-| TensorRT FP16 | 10–20 | Engine optimization |
-| TensorRT INT8 | 5–15 | Aggressive quantization |
-
-Your target is <30 ms, so **PyTorch FP16 (default) should work**.
-
-## Files in this Directory
-
-- `benchmark_inference.py` – Per-frame latency measurement
-- `export_to_tensorrt.py` – ONNX export helper
-- `torchscript_convert.py` – TorchScript export (reference, limited use)
-- `generate_calibration_data.py` – Calibration dataset builder (to be added)
-
-## Troubleshooting
-
-**"trtexec not found"**
-- trtexec comes with TensorRT on Jetson. Path is typically `/usr/src/tensorrt/bin/trtexec`.
-- Alternatively, use Python TensorRT API if preferred.
-
-**"Out of memory during engine build"**
-- Reduce workspace: `--workspace=1024` (default 2048)
-- Split the model into smaller subgraphs if needed.
-
-**"ONNX export failed with custom ops"**
-- The UETrack encoder/decoder may use custom PyTorch operations not supported by ONNX.
-- Fallback: Use Torch-TensorRT or run full PyTorch on Orin GPU.
-
-## Contact & Next Steps
-
-1. Run `tools/benchmark_inference.py` on Orin to measure current latency.
-2. Report the median latency to the team.
-3. If <30 ms, you're done.
-4. If >30 ms, try TensorRT FP16 next.
-5. If TensorRT FP16 is still >30 ms, open a calibration issue or try INT8.
-
-Good luck!
+That script does not currently write an ONNX file. A production TensorRT path needs a tensor-only wrapper around the UETrack encoder/decoder, then accuracy and latency checks against PyTorch FP16 output.

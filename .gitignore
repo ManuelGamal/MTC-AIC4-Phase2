@@ -3,7 +3,10 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.vscode/
+predictions/
 predictions*.csv
+predictions_cows*.csv
 /data/
 *.avi
 *.mp4

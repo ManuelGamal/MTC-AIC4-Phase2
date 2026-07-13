@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import types
+import importlib
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,8 +37,13 @@ IMG_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMG_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 USE_CHANNELS_LAST = os.getenv("ORIN_CHANNELS_LAST", "1") == "1"
 USE_CUDA_AUTOTUNE = os.getenv("ORIN_CUDA_AUTOTUNE", "1") == "1"
-USE_TF32 = os.getenv("ORIN_TF32", "0") == "1"
+USE_TF32 = os.getenv("ORIN_TF32", "1") == "1"
 USE_CUDA_WARMUP = os.getenv("ORIN_CUDA_WARMUP", "1") == "1"
+USE_FP16 = os.getenv("ORIN_FP16", "1") == "1"
+USE_COMPILE = os.getenv("ORIN_COMPILE", "0") == "1"
+USE_TENSORRT = os.getenv("ORIN_TENSORRT", "0") == "1"
+TENSORRT_REQUIRED = os.getenv("ORIN_TENSORRT_REQUIRED", "0") == "1"
+TENSORRT_ENGINE_PATH = Path(os.getenv("ORIN_TENSORRT_ENGINE", REPO_ROOT / "checkpoints" / "uetrack_fp16.engine"))
 
 
 @dataclass
@@ -61,6 +67,7 @@ class UETrackModelBundle:
     network: torch.nn.Module
     cfg: RuntimeConfig
     device: torch.device
+    trt_runner: "TensorRTRunner | None" = None
 
 
 def load_model(device: str = "cuda") -> UETrackModelBundle:
@@ -112,12 +119,23 @@ def load_model(device: str = "cuda") -> UETrackModelBundle:
         network = _apply_dynamic_quantization(network)
 
     network = network.to(torch_device).eval()
+    if torch_device.type == "cuda" and USE_FP16:
+        network = network.half()
     if torch_device.type == "cuda" and USE_CHANNELS_LAST:
         network = network.to(memory_format=torch.channels_last)
+    if torch_device.type == "cuda" and USE_COMPILE:
+        try:
+            torch_dynamo = importlib.import_module("torch._dynamo")
+            torch_dynamo.config.suppress_errors = True
+            network = torch.compile(network, mode="max-autotune", fullgraph=True)
+        except Exception:
+            pass
     if torch_device.type == "cuda" and USE_CUDA_WARMUP:
         _warmup_network(network, torch_device, runtime_cfg)
 
-    return UETrackModelBundle(network=network, cfg=runtime_cfg, device=torch_device)
+    trt_runner = _load_tensorrt_runner_if_enabled(torch_device)
+
+    return UETrackModelBundle(network=network, cfg=runtime_cfg, device=torch_device, trt_runner=trt_runner)
 
 
 def run_tracker(
@@ -135,7 +153,7 @@ def run_tracker(
         raise FileNotFoundError(f"Could not open video: {video_path!s}")
 
     predictions: List[dict] = []
-    tracker = UETrackOnline(model.network, model.cfg, model.device)
+    tracker = UETrackOnline(model.network, model.cfg, model.device, model.trt_runner)
     frame_idx = 0
 
     try:
@@ -168,12 +186,19 @@ class UETrackOnline:
     Online tracker wrapper matching the original competition pipeline.
     """
 
-    def __init__(self, network: torch.nn.Module, cfg: RuntimeConfig, device: torch.device):
+    def __init__(
+        self,
+        network: torch.nn.Module,
+        cfg: RuntimeConfig,
+        device: torch.device,
+        trt_runner: "TensorRTRunner | None" = None,
+    ):
         from lib.test.utils.hann import hann2d
 
         self.network = network
         self.cfg = cfg
         self.device = device
+        self.trt_runner = trt_runner
         self.template_size = cfg.template_size
         self.search_size = cfg.search_size
         self.template_factor = cfg.template_factor
@@ -224,6 +249,8 @@ class UETrackOnline:
             normalize=True,
         )
         template_anno = prev_box_crop.to(self.device).unsqueeze(0)
+        if self.device.type == "cuda" and USE_FP16:
+            template_anno = template_anno.half()
 
         self.template_list = [template] * self.num_template
         self.template_anno_list = [template_anno] * self.num_template
@@ -262,21 +289,7 @@ class UETrackOnline:
         )
         search = image_to_device_tensor(x_patch_arr, self.device)
 
-        autocast_ctx = (
-            torch.autocast(device_type="cuda")
-            if self.device.type == "cuda"
-            else nullcontext()
-        )
-        with torch.inference_mode(), autocast_ctx:
-            raw = self.network.forward_encoder(
-                self.template_list,
-                [search],
-                self.template_anno_list,
-                text_src=None,
-                task_index=0,
-            )
-            features = raw[0]
-            out_dict = self.network.forward_decoder(features)
+        out_dict = self._run_network_forward(search)
 
         response = (
             (1 - self.window_influence) * out_dict["score_map"]
@@ -373,6 +386,8 @@ class UETrackOnline:
             dyn_template = preprocess_image(z_patch_arr).unsqueeze(0)
             if self.device.type == "cuda" and USE_CHANNELS_LAST:
                 dyn_template = dyn_template.contiguous(memory_format=torch.channels_last)
+            if self.device.type == "cuda" and USE_FP16:
+                dyn_template = dyn_template.half()
             prev_box_crop = transform_image_to_crop(
                 torch.tensor(self.state),
                 torch.tensor(self.state),
@@ -381,6 +396,8 @@ class UETrackOnline:
                 normalize=True,
             )
             dyn_anno = prev_box_crop.to(self.device).unsqueeze(0)
+            if self.device.type == "cuda" and USE_FP16:
+                dyn_anno = dyn_anno.half()
 
             self.memory_template_list.append(dyn_template)
             self.memory_template_anno_list.append(dyn_anno)
@@ -404,6 +421,156 @@ class UETrackOnline:
             self.vy = 0.8 * self.vy + 0.2 * (curr_cy - self.last_cy)
         self.last_cx = curr_cx
         self.last_cy = curr_cy
+
+    def _run_network_forward(self, search: torch.Tensor) -> dict[str, torch.Tensor]:
+        if self.trt_runner is not None:
+            try:
+                return self.trt_runner.forward(
+                    self.template_list,
+                    [search],
+                    self.template_anno_list,
+                )
+            except Exception:
+                if TENSORRT_REQUIRED:
+                    raise
+                print("TensorRT runner failed; falling back to PyTorch for this sequence.", file=sys.stderr)
+                self.trt_runner = None
+
+        autocast_ctx = _cuda_autocast_context(self.device)
+        with torch.inference_mode(), autocast_ctx:
+            raw = self.network.forward_encoder(
+                self.template_list,
+                [search],
+                self.template_anno_list,
+                text_src=None,
+                task_index=0,
+            )
+            features = raw[0]
+            return self.network.forward_decoder(features)
+
+
+class TensorRTRunner:
+    """
+    TensorRT execution wrapper for the UETrack tensor-only engine.
+    """
+
+    INPUT_NAMES = ("template0", "template1", "search", "anno0", "anno1")
+    OUTPUT_NAMES = ("score_map", "size_map", "offset_map")
+
+    def __init__(self, engine_path: Path, device: torch.device):
+        if device.type != "cuda":
+            raise RuntimeError("TensorRT runner requires a CUDA device.")
+
+        import tensorrt as trt
+
+        self.trt = trt
+        self.device = device
+        self.engine_path = Path(engine_path)
+        logger = trt.Logger(trt.Logger.WARNING)
+        runtime = trt.Runtime(logger)
+        engine_bytes = self.engine_path.read_bytes()
+        self.engine = runtime.deserialize_cuda_engine(engine_bytes)
+        if self.engine is None:
+            raise RuntimeError(f"Could not deserialize TensorRT engine: {self.engine_path}")
+        self.context = self.engine.create_execution_context()
+        if self.context is None:
+            raise RuntimeError("Could not create TensorRT execution context.")
+
+        self.tensor_names = [self.engine.get_tensor_name(idx) for idx in range(self.engine.num_io_tensors)]
+        required = (*self.INPUT_NAMES, *self.OUTPUT_NAMES)
+        missing = [name for name in required if name not in self.tensor_names]
+        if missing:
+            raise RuntimeError(f"TensorRT engine is missing tensors: {missing}")
+        self.input_dtypes = {name: self._torch_dtype(self.engine.get_tensor_dtype(name)) for name in self.INPUT_NAMES}
+        self.output_dtypes = {name: self._torch_dtype(self.engine.get_tensor_dtype(name)) for name in self.OUTPUT_NAMES}
+
+    def forward(
+        self,
+        templates: Sequence[torch.Tensor],
+        searches: Sequence[torch.Tensor],
+        template_annos: Sequence[torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        if len(templates) < 2 or len(template_annos) < 2 or len(searches) < 1:
+            raise ValueError("TensorRT UETrack engine expects two templates, one search, and two annotations.")
+
+        inputs = {
+            "template0": self._prepare_input("template0", templates[0]),
+            "template1": self._prepare_input("template1", templates[1]),
+            "search": self._prepare_input("search", searches[0]),
+            "anno0": self._prepare_input("anno0", template_annos[0]),
+            "anno1": self._prepare_input("anno1", template_annos[1]),
+        }
+
+        for name, tensor in inputs.items():
+            try:
+                self.context.set_input_shape(name, tuple(tensor.shape))
+            except Exception:
+                pass
+            self.context.set_tensor_address(name, tensor.data_ptr())
+
+        outputs: dict[str, torch.Tensor] = {}
+        for name in self.OUTPUT_NAMES:
+            shape = tuple(int(dim) for dim in self.context.get_tensor_shape(name))
+            if any(dim < 0 for dim in shape):
+                shape = tuple(int(dim) for dim in self.engine.get_tensor_shape(name))
+            if any(dim < 0 for dim in shape):
+                raise RuntimeError(f"TensorRT output shape is unresolved for {name}: {shape}")
+            output = torch.empty(shape, device=self.device, dtype=self.output_dtypes[name])
+            self.context.set_tensor_address(name, output.data_ptr())
+            outputs[name] = output
+
+        stream = torch.cuda.current_stream(self.device)
+        ok = self.context.execute_async_v3(stream_handle=stream.cuda_stream)
+        if not ok:
+            raise RuntimeError("TensorRT execute_async_v3 failed.")
+        return outputs
+
+    def _prepare_input(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
+        expected_dtype = self.input_dtypes[name]
+        if tensor.device != self.device or tensor.dtype != expected_dtype:
+            tensor = tensor.to(device=self.device, dtype=expected_dtype, non_blocking=True)
+        return tensor.contiguous()
+
+    def _torch_dtype(self, trt_dtype) -> torch.dtype:
+        trt = self.trt
+        mapping = {
+            trt.float32: torch.float32,
+            trt.float16: torch.float16,
+            trt.int32: torch.int32,
+            trt.int8: torch.int8,
+            trt.bool: torch.bool,
+        }
+        if hasattr(trt, "bfloat16"):
+            mapping[trt.bfloat16] = torch.bfloat16
+        if trt_dtype not in mapping:
+            raise TypeError(f"Unsupported TensorRT dtype: {trt_dtype}")
+        return mapping[trt_dtype]
+
+
+def _load_tensorrt_runner_if_enabled(device: torch.device) -> TensorRTRunner | None:
+    if not USE_TENSORRT:
+        return None
+    if device.type != "cuda":
+        message = "ORIN_TENSORRT=1 was set, but CUDA is not available."
+        if TENSORRT_REQUIRED:
+            raise RuntimeError(message)
+        print(message + " Falling back to PyTorch.", file=sys.stderr)
+        return None
+    if not TENSORRT_ENGINE_PATH.exists():
+        message = f"TensorRT engine not found: {TENSORRT_ENGINE_PATH}"
+        if TENSORRT_REQUIRED:
+            raise FileNotFoundError(message)
+        print(message + " Falling back to PyTorch.", file=sys.stderr)
+        return None
+    try:
+        runner = TensorRTRunner(TENSORRT_ENGINE_PATH, device)
+    except Exception as exc:
+        if TENSORRT_REQUIRED:
+            raise
+        print(f"Could not load TensorRT engine ({exc}). Falling back to PyTorch.", file=sys.stderr)
+        return None
+    print(f"Using TensorRT engine: {TENSORRT_ENGINE_PATH}")
+    return runner
 
 
 def _ensure_runtime_ready() -> None:
@@ -626,7 +793,10 @@ def image_to_device_tensor(image: np.ndarray, device: torch.device) -> torch.Ten
     tensor = preprocess_image(image).unsqueeze(0)
     if device.type == "cuda" and USE_CHANNELS_LAST:
         tensor = tensor.contiguous(memory_format=torch.channels_last)
-    return tensor.to(device, non_blocking=True)
+    tensor = tensor.to(device, non_blocking=True)
+    if device.type == "cuda" and USE_FP16:
+        tensor = tensor.half()
+    return tensor
 
 
 def transform_image_to_crop(
@@ -703,7 +873,7 @@ def _warmup_network(network: torch.nn.Module, device: torch.device, cfg: Runtime
         template = template.contiguous(memory_format=torch.channels_last)
         search = search.contiguous(memory_format=torch.channels_last)
     template_anno = torch.tensor([[0.25, 0.25, 0.5, 0.5]], device=device)
-    autocast_ctx = torch.autocast(device_type="cuda")
+    autocast_ctx = _cuda_autocast_context(device)
     try:
         with torch.inference_mode(), autocast_ctx:
             raw = network.forward_encoder(
@@ -717,3 +887,9 @@ def _warmup_network(network: torch.nn.Module, device: torch.device, cfg: Runtime
         torch.cuda.synchronize(device)
     except Exception:
         pass
+
+
+def _cuda_autocast_context(device: torch.device):
+    if device.type == "cuda" and USE_FP16:
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    return nullcontext()

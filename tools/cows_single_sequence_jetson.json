@@ -1,0 +1,9 @@
+{
+  "test": {
+    "dataset1/cows": {
+      "video_path": "data/dataset1/cows/cows.mp4",
+      "annotation_path": "data/dataset1/cows/annotation.txt",
+      "n_frames": 489
+    }
+  }
+}
