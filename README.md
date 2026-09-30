@@ -18,13 +18,14 @@ System description: [`paper/system_description.pdf`](paper/system_description.pd
 
 ## Why inference-time only
 
-UAV tracking stresses what ground-level benchmarks rarely do: tiny targets,
-abrupt camera ego-motion, occlusions, and fast altitude-driven scale change.
-Trackers tuned on LaSOT or TrackingNet carry priors that hurt here: a
-multiplicative Hanning window suppresses targets pushed toward the edge of the
-search region, and heavy box smoothing lags real scale changes. With a short
-competition window and no budget to retrain, we changed the priors instead of
-the weights.
+We think inference engineering is overlooked. A strong pretrained tracker
+already knows how to find a target; what fails on UAV footage is the pipeline
+around it. Trackers tuned on LaSOT or TrackingNet carry inference priors that
+hurt here: a multiplicative Hanning window suppresses targets pushed toward the
+edge of the search region by camera ego-motion, and heavy box smoothing lags
+fast altitude-driven scale changes. So instead of retraining, we studied the
+model closely and rebuilt its inference pipeline for this domain. We were the
+only team in the final that did not retrain its model.
 
 ## What we changed
 
