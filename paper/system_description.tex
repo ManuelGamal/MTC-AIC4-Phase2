@@ -1,0 +1,143 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{times}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage[breaklinks=true,bookmarks=false]{hyperref}
+
+\begin{document}
+
+%%%%%%%%% TITLE
+\title{Robust UAV Object Tracking via Inference-Time Architectural Adaptations}
+
+\author{
+Team NewbieSquad
+}
+
+\date{}
+
+\maketitle
+
+%%%%%%%%% ABSTRACT
+\begin{abstract}
+Tracking small, fast-moving objects from Unmanned Aerial Vehicles (UAVs) presents a uniquely demanding regime: targets occupy a minuscule fraction of the frame, ego-motion is abrupt and non-smooth, and scale changes driven by altitude variation are large and frequent. We present Team NewbieSquad's submission to the MTC AIC-4 UAV Tracking Competition. Rather than retrain on UAV-specific data, we adapt a publicly available vision-language pretrained tracker (UETrack) entirely through inference-time modifications. Our system combines five targeted contributions: (i) Channel-Fused Modality Adaptation, which surgically reduces the checkpoint's 6-channel input projection to 3-channel RGB form via weight summation; (ii) a dual-template memory bank with confidence-gated updates to track viewpoint-induced deformation; (iii) a re-acquisition policy coupling Dynamic Search Expansion with Constant Velocity Occlusion Prediction during loss; (iv) an additive Center-Prior Augmentation that replaces the standard multiplicative Hanning window; and (v) Responsive Box Regression with reduced temporal smoothing for fast scale adaptation. The complete pipeline introduces no new trainable parameters, preserves the original encoder representation, and demonstrates that careful checkpoint surgery combined with kinematics-aware post-processing extracts competitive performance from a frozen off-the-shelf transformer tracker.
+\end{abstract}
+
+%%%%%%%%% BODY
+\section{Introduction}
+
+Unmanned Aerial Vehicle (UAV) object tracking exposes a regime that standard tracking benchmarks rarely stress: targets occupying a small fraction of the image, abrupt and non-smooth camera ego-motion, frequent partial and full occlusions, and large altitude-driven scale changes. Transformer-based trackers tuned on ground-based benchmarks such as LaSOT and TrackingNet are often implicitly over-regularized for these conditions. They apply strict spatial penalties --- typically a multiplicative Hanning window centered on the search region --- and aggressive temporal smoothing on box dimensions. Both priors degrade under UAV kinematics: the target frequently appears far from the search-region center, where multiplicative attenuation suppresses legitimate responses, and target scale changes faster than a heavily smoothed estimate can follow.
+
+Given the limited development window of the competition, training a competitive tracker from scratch was infeasible. We instead adapt UETrack~\cite{uetrack2026}, a transformer-based tracker with a strong publicly released checkpoint, modifying only its inference-time behavior. Our adaptation pipeline introduces no new trainable parameters; the encoder representation is preserved exactly as released. The contributions described below are entirely architectural surgery and post-processing redesign tailored to UAV kinematics.
+
+\section{Methodology}
+
+\subsection{Channel-Fused Modality Adaptation}
+
+We use the ViT-Base variant of UETrack. The released checkpoint was trained as a vision-language tracker with a 6-channel patch-embedding convention and a CLIP-based text-conditioning branch. For RGB-only deployment we disable the language branch through configuration, eliminating an entire CLIP visual encoder and CLIP text transformer from the active model. We then reduce the patch-embedding weight tensor from $C_{\text{out}} \times 6 \times K \times K$ to $C_{\text{out}} \times 3 \times K \times K$ via channel summation:
+\begin{equation}
+W'_{c, r, h, w} = W_{c, r, h, w} + W_{c, r+3, h, w}, \qquad r \in \{0, 1, 2\}.
+\end{equation}
+The active model is rebuilt with \texttt{IN\_CHANS=3}; subsequent LayerNorm layers renormalize activation magnitudes following the channel collapse. We verified empirically that the fused first-layer filters retain the per-channel structure characteristic of pretrained ViT RGB convolutions: the per-channel standard deviations across R, G, B are $0.024$, $0.030$, and $0.020$ respectively, consistent with green-dominant color filtering observed in standard ImageNet-pretrained vision backbones.
+
+To accommodate the dual-template configuration described next, we additionally reconcile the positional embedding by duplicating its template segment so that the encoder input length matches the active architecture:
+\begin{equation}
+\text{PE}_{\text{model}} = [\text{PE}_t \,\Vert\, \text{PE}_t \,\Vert\, \text{PE}_s].
+\end{equation}
+After channel reduction and PE reconciliation, \texttt{load\_state\_dict} reports zero missing parameters: every layer in the active architecture is initialized from pretrained weights.
+
+\subsection{Dual-Template Memory Bank}
+
+To accommodate target deformation under viewpoint change as the UAV orbits its subject, we run the tracker in dual-template mode (\texttt{NUM\_TEMPLATES=2}). Template slot 0 holds the initial ground-truth crop throughout the sequence and is never modified, providing a clean reference that anchors against drift. Template slot 1 is refreshed every 25 frames by selecting from a rolling memory bank of recent high-confidence crops, where the confidence threshold is set to $0.50$. Updates are strictly gated by the absent-state machine described in Section~\ref{sec:absent}: no template enters the bank while the tracker is flagged as having lost the target, preventing background or distractor regions from poisoning the learned appearance template.
+
+\subsection{Constant Velocity Occlusion Prediction}
+
+Standard trackers continue to query a search region centered on the last-known target location during full occlusions, which fails when the target traverses behind an occluder while continuing to move. We maintain a frame-to-frame velocity estimate $(v_x, v_y)$ updated on confidently-tracked frames as an exponential moving average of inter-frame center displacements:
+\begin{equation}
+v_x \leftarrow \alpha_v \cdot v_x + (1 - \alpha_v) \cdot (c_x^t - c_x^{t-1}),
+\end{equation}
+with $\alpha_v = 0.8$, and analogously for $v_y$. The high smoothing coefficient produces a velocity estimate that reflects the target's average motion over the past several frames rather than instantaneous frame-to-frame jitter. When the absent-state machine flags the target as lost, we extrapolate the search region's center by the velocity prior to encoder evaluation:
+\begin{equation}
+(x_t, y_t) \leftarrow (x_{t-1} + v_x,\ y_{t-1} + v_y).
+\end{equation}
+Combined with the dynamic search expansion below, the enlarged search crop is directed toward the predicted target trajectory rather than centered on a stale last-known position. When the drone exits the occluding region, the search area is already aligned with the target's expected trajectory.
+
+\subsection{Re-acquisition: Dynamic Search Expansion and Absent-State Gating}
+\label{sec:absent}
+
+A confidence-driven absent-state machine flags the target as lost when the model's score peak --- combined with area-ratio and border-proximity heuristics --- falls below an entry threshold of $0.25$ for two consecutive frames, and exits when the peak rises above an exit threshold of $0.40$ for three consecutive frames. While in the absent state, the tracker reports a zero bounding box but continues running encoder-decoder forward passes on an enlarged search region.
+
+Specifically, the search-region scale factor is multiplicatively expanded during loss:
+\begin{equation}
+s'_f = \min(1.5 \cdot s_f,\ 6.0), \qquad s_f = 4.5.
+\end{equation}
+Because the ViT token grid resolution is held fixed at the configured search size, the enlarged crop provides additional spatial coverage at no additional encoder cost: the model processes the same number of tokens but covers up to $1.78\times$ more image area for re-acquisition.
+
+\subsection{Center-Prior Augmentation}
+
+The standard transformer-tracker post-processing applies a multiplicative Hanning window to the score map, $R = H \odot S$, suppressing peaks toward the search-region edge. Under UAV ego-motion the target is frequently displaced toward the search boundary, where this multiplicative attenuation can over-suppress legitimate target responses. We instead combine an attenuated raw score map with an additive center-biased prior:
+\begin{equation}
+R = (1 - \lambda_h) \cdot S + \lambda_h \cdot H,
+\end{equation}
+with $\lambda_h = 0.40$, where $S$ is the model's raw score map and $H$ is a 2D Hanning window centered on the search region. This formulation differs from the conventional multiplicative blend $R = (1-\lambda_h) S + \lambda_h (H \odot S)$: by adding the window rather than multiplying, the center prior contributes a constant magnitude across the response map regardless of $S$. Strong off-center responses retain their full amplitude (rather than being attenuated proportionally to the window value at their location), while a constant center bias still resolves peak ambiguity in low-confidence regions. We found this formulation more robust for targets displaced by abrupt UAV ego-motion.
+
+\subsection{Responsive Box Regression}
+
+To prevent over-smoothing of legitimate scale changes during altitude variation, we set the EMA coefficient on bounding-box width and height to $\alpha = 0.25$, corresponding to an effective averaging horizon of approximately four frames:
+\begin{equation}
+\hat{w}_t = \alpha\, \hat{w}_{t-1} + (1-\alpha)\, w_t, \qquad
+\hat{h}_t = \alpha\, \hat{h}_{t-1} + (1-\alpha)\, h_t.
+\end{equation}
+This compromise preserves frame-to-frame stability against per-frame regression jitter while permitting the bounding box to follow real altitude-driven scale changes responsively. The combination of low temporal smoothing on box dimensions (Section~2.6) and high temporal smoothing on motion velocity (Section~2.3, $\alpha_v = 0.8$) reflects the asymmetric nature of UAV kinematics: scale changes are abrupt and should propagate immediately, while motion vectors benefit from longer-horizon smoothing to suppress per-frame jitter.
+
+\section{Inference Efficiency}
+
+The encoder forward pass runs under \texttt{torch.autocast('cuda')}, executing in FP16 mixed precision. The decoder runs in FP32 to preserve the numerical stability of the bounding-box regression head. Inputs are normalized with ImageNet statistics. The model uses template size $112$, search size $224$, and patch stride $16$, producing token grids of $7 \times 7$ for templates and $14 \times 14$ for the search region. The complete tracker contains approximately 22M parameters and runs at approximately $40$ FPS on a single CUDA device, leaving substantial headroom under standard 50M-parameter and 30 ms-latency efficiency budgets.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Configuration of the submitted tracker.}
+\label{tab:config}
+\begin{tabular}{ll}
+\toprule
+Component & Value \\
+\midrule
+Encoder backbone           & ViT-Base \\
+Template / search size     & 112 / 224 \\
+Patch stride               & 16 \\
+Number of templates        & 2 \\
+Memory update interval     & 25 frames \\
+Memory confidence threshold & 0.50 \\
+Search factor (base)       & 4.5 \\
+Search factor (absent, max) & 6.0 \\
+Hanning blend $\lambda_h$  & 0.40 \\
+Box EMA $\alpha$           & 0.25 \\
+Velocity EMA $\alpha_v$    & 0.80 \\
+Absent entry / exit conf   & 0.25 / 0.40 \\
+Absent entry / exit streak & 2 / 3 frames \\
+Encoder precision          & FP16 (autocast) \\
+Decoder precision          & FP32 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Conclusion}
+
+We presented an inference-only adaptation of a vision-language pretrained tracker for UAV single-object tracking. By combining careful checkpoint surgery (Channel-Fused Modality Adaptation, language-branch removal, positional-embedding reconciliation) with a UAV-tuned post-processing pipeline (additive center prior, responsive box smoothing, motion-extrapolated re-acquisition with dynamic search expansion), we extract competitive performance from a frozen off-the-shelf transformer tracker. Our pipeline introduces no new trainable parameters and demonstrates that, in the absence of compute and data for retraining, the careful selection of inference-time priors is the dominant factor in adapting general-purpose trackers to specialized deployment regimes such as UAV imagery. The asymmetric temporal-smoothing design --- aggressive on motion vectors, minimal on box dimensions --- and the additive center prior in place of multiplicative Hanning attenuation are particularly well-suited to the abrupt-ego-motion, large-scale-change regime characteristic of aerial tracking, and we expect these choices to generalize to other transformer-based trackers deployed under similar conditions.
+
+%%%%%%%%% REFERENCES
+{\small
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+\bibitem{uetrack2026}
+B.~Kang, J.~Zhao, X.~Chen, W.~Geng, B.~Zhang, L.~Zhang, D.~Wang, and H.~Lu.
+\newblock UETrack: A unified and efficient framework for single object tracking.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2026.
+\newblock arXiv:2603.01412.
+\end{thebibliography}
+}
+
+\end{document}

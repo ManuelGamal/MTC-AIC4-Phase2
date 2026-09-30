@@ -1,235 +1,100 @@
-# Object Tracking Competition
+# UAV Single-Object Tracking — AIC-4
 
-## Overview
+**5th place at the AIC-4 international final**, out of 200+ teams, after three
+qualifying phases. Team NewbieSquad; team lead Manuel Gamal.
 
-Participants must implement an object tracker that:
+A frozen, off-the-shelf transformer tracker (UETrack, ViT-Base) adapted to UAV
+footage **entirely at inference time**: no new trainable parameters, no
+fine-tuning on competition data.
 
-- takes a video sequence as input
-- predicts one bounding box per frame
-- outputs predictions in CSV format
+| Result | Value |
+|---|---|
+| Public leaderboard score | **0.7822** |
+| Normalized precision, 67 private sequences | **0.97** |
+| Model size | ~22M parameters (budget: 50M) |
+| Speed | ~40 FPS on a single CUDA GPU; TensorRT FP16 path for deployment |
 
-The organizer evaluation script automatically:
+System description: [`paper/system_description.pdf`](paper/system_description.pdf).
 
-- loads videos
-- measures latency
-- saves predictions
-- validates submission format
+## Why inference-time only
 
-Participants only modify:
+UAV tracking stresses what ground-level benchmarks rarely do: tiny targets,
+abrupt camera ego-motion, occlusions, and fast altitude-driven scale change.
+Trackers tuned on LaSOT or TrackingNet carry priors that hurt here: a
+multiplicative Hanning window suppresses targets pushed toward the edge of the
+search region, and heavy box smoothing lags real scale changes. With a short
+competition window and no budget to retrain, we changed the priors instead of
+the weights.
 
-- `predictor.py`
+## What we changed
 
----
+1. **Channel-fused modality adaptation.** The released checkpoint is a
+   vision-language tracker with a 6-channel patch embedding and a CLIP branch.
+   We disabled the language branch (removing a CLIP image and text encoder from
+   the active model) and folded the 6-channel projection into 3 RGB channels by
+   weight summation. After reconciling the positional embedding for two
+   templates, `load_state_dict` reports zero missing parameters.
+2. **Dual-template memory.** Slot 0 keeps the first-frame crop and never
+   changes, anchoring against drift; slot 1 refreshes every 25 frames from
+   recent high-confidence crops, and never while the target is flagged as lost.
+3. **Re-acquisition.** A confidence-gated absent-state machine detects loss.
+   While lost, the search region follows a constant-velocity prediction of the
+   target and expands up to 6.0x, covering 1.78x more area for the same number
+   of tokens.
+4. **Additive center prior.** `R = (1 − λ)·S + λ·H` replaces the multiplicative
+   Hanning window, so strong off-center responses keep their full amplitude.
+5. **Asymmetric smoothing.** Light smoothing on box size (α = 0.25) follows
+   scale changes; heavy smoothing on velocity (α = 0.8) suppresses jitter.
 
-# Repository Structure
+The full configuration is in Table 1 of the system description.
 
-```text
-submission/
-├── inference.py
-├── predictor.py
-├── download.py
-├── check_submission.py
-├── requirements.txt
-├── sample_submission.csv
-└── checkpoints/
+## Run it
+
+Model weights are too large for GitHub. `download.py` fetches them into
+`checkpoints/` (the Docker build runs it automatically).
+
+**Docker (the final-round submission):**
+
+```bash
+docker buildx build --platform linux/amd64 -f Dockerfile -t newbiesquad_phase3:latest --load .
+docker run --rm --gpus all newbiesquad_phase3:latest \
+  bash run_inference.sh test.json public_lb predictions.csv
 ```
 
----
+`run_inference.sh` builds and uses a TensorRT FP16 engine when it can, and falls
+back to PyTorch FP16 otherwise. Build details, verification commands and the
+runtime order are in [`PHASE3_DOCKER_SUBMISSION.md`](PHASE3_DOCKER_SUBMISSION.md).
 
-# Installation
+**Without Docker:**
 
-Create environment:
- requirements should include the exact versions not just the libraries
 ```bash
 pip install -r requirements.txt
-```
-
----
-
-# Step 1 — Download Checkpoints
-
-Download your model weights:
-
-```bash
 python download.py
+python inference.py test.json public_lb predictions.csv
+python check_submission.py sample_submission.csv predictions.csv
 ```
 
-This should download checkpoints into:
+Output is one box per frame, `id,x,y,w,h`.
 
-```text
-checkpoints/
-```
-
-Example:
-
-```text
-checkpoints/model.pth
-```
-> You are required to replace "YOUR_FILE_ID" with the actual file ID from Google Drive to download the checkpoint.
-Or replace the download method with your preferred method if you are not using Google Drive.
->
-> If we cannot download the file successfully, your team will be disqualified 
----
-
-# Step 2 — Run Inference
-
-Run tracking inference:
+**Tests:**
 
 ```bash
-python inference.py \
-    data/test.json \
-    split_name \
-    predictions.csv
+python -m unittest discover -s tests -p "test*.py" -v
 ```
 
-Arguments:
+## Layout
 
-```text
-1. input json
-2. split name
-3. output csv
-```
+| Path | What it is |
+|---|---|
+| `predictor.py` | the tracker: checkpoint surgery, memory, re-acquisition, post-processing |
+| `inference.py`, `run_inference.sh` | competition entry points |
+| `UETrack/` | upstream UETrack code the checkpoint loads into |
+| `tools/` | TensorRT export, latency benchmarks, submission checks |
+| `tests/` | unit and submission-readiness tests |
+| `paper/` | system description |
 
+## Acknowledgements
 
----
-
-# Step 3 — Validate Submission
-
-Check that your submission format is correct:
-
-```bash
-python check_submission.py \
-    sample_submission.csv \
-    predictions.csv
-```
-
-This verifies:
-
-- correct CSV columns
-- correct frame IDs
-- correct number of predictions
-
----
-
-# Required CSV Format
-
-Your predictions must follow:
-
-```csv
-id,x,y,w,h
-dataset1/Car_video_0,0,0,0,0
-dataset1/Car_video_1,0,0,0,0
-dataset1/Car_video_2,0,0,0,0
-```
-
----
-
-# Required Output
-
-Your tracker must return:
-
-```python
-[
-    {
-        "frame_idx": 0,
-        "x": 10,
-        "y": 20,
-        "w": 30,
-        "h": 40,
-    }
-]
-```
-
-One prediction per frame.
-
----
-
-# Rules
-
-## Allowed
-
-- PyTorch
-- OpenCV
-- Any tracking architecture
-- Any Python libraries in `requirements.txt`
-
-## Not Allowed
-
-- Absolute paths
-- Interactive input
-- Manual file selection
-- Modifying `inference.py`
-
----
-
-# Notes
-
-- The first-frame bounding box is provided.
-- One bounding box must be predicted for every frame.
-- Relative paths only.
-- The evaluation environment may not have internet access during inference.
-
----
-
-# Another reminder this should  be what we will do (any failure in this will lead to immediate disqualification) 
-
-```bash
-# install dependencies
-pip install -r requirements.txt
-
-# download checkpoint
-python download.py
-
-# run inference
-python inference.py \
-    data/test.json \
-    hidden \
-    predictions.csv
-
-# validate predictions
-python check_submission.py \
-    sample_submission.csv \
-    predictions.csv
-```# NewbieSquad - UAV Object Tracking (AIC-4 Phase I)
-
-This repository contains our submission for the MTC AIC-4 Phase I UAV Tracking Competition.
-Our approach utilizes a pre-trained UETrack model with heavily optimized inference-time algorithms specifically designed for erratic UAV motion, extreme scale changes, and severe occlusions.
-
-## Directory Structure
-- `checkpoints/`: Directory where the pre-trained `model_final.pth` (uetrack_base) should be placed.
-- `inference_scripts/`: Contains `inference.py` for evaluating on the test set.
-- `training_scripts/`: Contains notes on training.
-- `tests/`: Contains verification scripts and automated tests.
-- `paper/`: Contains the PDF of our system description.
-
----
-
-## Model Weights
-Due to GitHub's file size limits, the pre-trained model checkpoint (`model_final.pth`) is hosted externally. 
-Please download the weights from our **[Google Drive Folder](https://drive.google.com/drive/folders/18uOU8gPKn1ejLtfVWgncdKaGvbkavUjC?usp=sharing)** and place the file directly inside the `checkpoints/` directory before building the Docker image or running inference.
-
-## Precise Commands for Verification
-
-### 1. Model Training
-Our solution utilizes a **zero-shot** approach leveraging the pre-trained UETrack weights. We did not perform any additional fine-tuning or training on the competition data. Therefore, no training commands are required. Ensure you have downloaded the weights into the `checkpoints/` folder as instructed above.
-
-### 2. Model Inference
-To execute inference in an isolated Docker environment exactly as required by the competition specifications, follow these commands from the root of this repository:
-
-**Step A: Build the Docker Image**
-```bash
-docker build -t newbiesquad_submission .
-```
-
-**Step B: Run Inference (Air-Gapped)**
-*Note: Replace `/your/local/test/data` with the path to the hidden test set, and `/your/local/output` with the directory where `submission.csv` should be saved.*
-
-```bash
-docker run --rm --gpus all \
-    --network none \
-    -v /your/local/test/data:/workspace/data:ro \
-    -v /your/local/output:/workspace/mtc_uav_uetrack \
-    newbiesquad_submission
-```
-
-The script will process the `contestant_manifest.json` located at `/workspace/data` and successfully output the `submission.csv` to your designated output folder.
+Built on UETrack (Kang et al.,
+[*UETrack: A Unified and Efficient Framework for Single Object Tracking*](https://arxiv.org/abs/2603.01412),
+CVPR 2026) and its released checkpoint. MIT licensed; see [`LICENSE`](LICENSE).
